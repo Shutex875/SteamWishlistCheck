@@ -1,5 +1,7 @@
 import requests
 
+DEFAULT_TIMEOUT = 10
+
 
 def fetch_owned_games(steam_id: str, api_key: str) -> set[int]:
     """Fetch the set of appids owned by the given steam_id.
@@ -8,9 +10,7 @@ def fetch_owned_games(steam_id: str, api_key: str) -> set[int]:
     """
     url = f"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={api_key}&steamid={steam_id}&format=json"
     try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            return set()
+        resp = requests.get(url, timeout=DEFAULT_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, dict) and "response" in data and "games" in data["response"]:
@@ -18,7 +18,7 @@ def fetch_owned_games(steam_id: str, api_key: str) -> set[int]:
             if isinstance(games, list):
                 return {g["appid"] for g in games if isinstance(g, dict) and "appid" in g}
         return set()
-    except Exception:
+    except (requests.RequestException, ValueError):
         # Gracefully handle private accounts or API errors
         return set()
 
@@ -32,9 +32,7 @@ def fetch_wishlist(steam_id: str) -> list[dict]:
     # In a full implementation, loop through pages
     url = f"https://store.steampowered.com/wishlist/profiles/{steam_id}/wishlistdata/?p=0"
     try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            return []
+        resp = requests.get(url, timeout=DEFAULT_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         
@@ -73,6 +71,6 @@ def fetch_wishlist(steam_id: str) -> list[dict]:
                 "price_usd": price
             })
         return parsed
-    except Exception:
+    except (requests.RequestException, ValueError):
         # Gracefully handle private accounts or API errors
         return []
