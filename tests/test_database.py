@@ -7,6 +7,7 @@ from src.database import (
     set_rejected_price,
     get_rejected_price,
     clear_expired_sales,
+    get_all_game_states,
 )
 
 
@@ -62,3 +63,21 @@ def test_connection_closed_allows_file_removal(tmp_path):
     # Should not raise PermissionError
     os.remove(path)
     assert not os.path.exists(path)
+
+
+def test_get_all_game_states(db_path):
+    # Empty initially
+    assert get_all_game_states(db_path) == {}
+
+    update_last_notified(db_path, 1, 4.99)
+    set_rejected_price(db_path, 2, 9.99)
+    update_last_notified(db_path, 3, 2.99)
+    set_rejected_price(db_path, 3, 5.99)
+
+    states = get_all_game_states(db_path)
+    assert states == {
+        1: {'last_notified_price': 4.99, 'rejected_price': None},
+        2: {'last_notified_price': None, 'rejected_price': 9.99},
+        3: {'last_notified_price': 2.99, 'rejected_price': 5.99},
+    }
+

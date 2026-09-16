@@ -63,3 +63,16 @@ def clear_expired_sales(db_path: str, current_discounted_app_ids: list[int]):
                     f"UPDATE game_states SET last_notified_price = NULL WHERE app_id NOT IN ({placeholders})",
                     current_discounted_app_ids
                 )
+
+
+def get_all_game_states(db_path: str) -> dict[int, dict]:
+    with closing(get_connection(db_path)) as conn:
+        cursor = conn.execute("SELECT app_id, last_notified_price, rejected_price FROM game_states")
+        return {
+            row[0]: {
+                'last_notified_price': row[1],
+                'rejected_price': row[2],
+            }
+            for row in cursor.fetchall()
+        }
+
