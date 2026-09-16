@@ -125,6 +125,63 @@ async def test_check_wishlist_periodic_no_actionable(tmp_path):
         context.bot.send_message.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_check_wishlist_periodic_outer_exception_handling():
+    context = MagicMock()
+    context.job.data = {
+        'db_path': 'dummy.db',
+        'steam_id': '12345',
+        'steam_api_key': 'key_abc',
+        'family_ids': [],
+        'chat_id': 'chat_999',
+    }
+    context.bot.send_message = AsyncMock()
+
+    # Steam API raises an exception
+    with patch('src.main.fetch_wishlist', side_effect=Exception("Steam down")):
+        # Should not raise
+        await check_wishlist_periodic(context)
+
+    context.bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_wishlist_periodic_inner_exception_handling(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    setup_db(db_path)
+
+    context = MagicMock()
+    context.job.data = {
+        'db_path': db_path,
+        'steam_id': '12345',
+        'steam_api_key': 'key_abc',
+        'family_ids': [],
+        'chat_id': 'chat_999',
+    }
+
+    # First send_message fails, second succeeds
+    context.bot.send_message = AsyncMock(side_effect=[
+        Exception("Telegram rate limit"),
+        MagicMock(),
+    ])
+
+    actionable_games = [
+        {'appid': 101, 'name': 'Game 1', 'discount_pct': 50, 'price_usd': 5.0},
+        {'appid': 102, 'name': 'Game 2', 'discount_pct': 60, 'price_usd': 4.0},
+    ]
+
+    with patch('src.main.fetch_wishlist', return_value=actionable_games), \
+         patch('src.main.get_actionable_games', return_value=actionable_games):
+
+        await check_wishlist_periodic(context)
+
+        assert context.bot.send_message.call_count == 2
+        # Game 101 failed to send, so not updated
+        assert get_last_notified(db_path, 101) is None
+        # Game 102 succeeded, so updated
+        assert get_last_notified(db_path, 102) == 4.0
+
+
 def test_main():
     env_vars = {
         "TELEGRAM_TOKEN": "bot_token_123",
@@ -132,6 +189,7 @@ def test_main():
         "STEAM_API_KEY": "api_key_222",
         "TELEGRAM_CHAT_ID": "chat_333",
         "FAMILY_STEAM_IDS": "fam_1, fam_2",
+        "DB_PATH": "custom_data.db",
     }
 
     mock_app = MagicMock()
@@ -144,14 +202,14 @@ def test_main():
 
         main()
 
-        mock_setup_db.assert_called_once_with("data.db")
-        mock_create_app.assert_called_once_with("bot_token_123", "data.db")
+        mock_setup_db.assert_called_once_with("custom_data.db")
+        mock_create_app.assert_called_once_with("bot_token_123", "custom_data.db")
         mock_job_queue.run_repeating.assert_called_once_with(
             check_wishlist_periodic,
             interval=86400,
             first=10,
             data={
-                'db_path': "data.db",
+                'db_path': "custom_data.db",
                 'steam_id': "steam_111",
                 'steam_api_key': "api_key_222",
                 'family_ids': ["fam_1", "fam_2"],
@@ -159,6 +217,27 @@ def test_main():
             }
         )
         mock_app.run_polling.assert_called_once()
+
+
+def test_main_default_db_path():
+    env_vars = {
+        "TELEGRAM_TOKEN": "bot_token_123",
+        "MAIN_STEAM_ID": "steam_111",
+        "STEAM_API_KEY": "api_key_222",
+        "TELEGRAM_CHAT_ID": "chat_333",
+    }
+
+    mock_app = MagicMock()
+    mock_job_queue = MagicMock()
+    mock_app.job_queue = mock_job_queue
+
+    with patch.dict('os.environ', env_vars, clear=True), \
+         patch('src.main.setup_db') as mock_setup_db, \
+         patch('src.main.create_app', return_value=mock_app):
+
+        main()
+
+        mock_setup_db.assert_called_once_with("data.db")
 
 
 def test_main_empty_family_ids():
@@ -182,3 +261,25 @@ def test_main_empty_family_ids():
 
         call_args = mock_job_queue.run_repeating.call_args
         assert call_args.kwargs['data']['family_ids'] == []
+
+
+@pytest.mark.parametrize("missing_var", [
+    "TELEGRAM_TOKEN",
+    "MAIN_STEAM_ID",
+    "STEAM_API_KEY",
+    "TELEGRAM_CHAT_ID",
+])
+def test_main_missing_required_env_vars(missing_var):
+    env_vars = {
+        "TELEGRAM_TOKEN": "bot_token_123",
+        "MAIN_STEAM_ID": "steam_111",
+        "STEAM_API_KEY": "api_key_222",
+        "TELEGRAM_CHAT_ID": "chat_333",
+    }
+    del env_vars[missing_var]
+
+    with patch.dict('os.environ', env_vars, clear=True), \
+         pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
