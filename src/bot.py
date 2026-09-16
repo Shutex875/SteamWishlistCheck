@@ -1,7 +1,7 @@
 import logging
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from src.database import set_rejected_price, setup_db
+from src.database import set_rejected_price
 
 logging.basicConfig(level=logging.INFO)
 
@@ -16,16 +16,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
     if data == "delete_msg":
+        logging.info("Deleting message on user request")
         await query.message.delete()
         return
 
     if data.startswith("reject_"):
-        parts = data.split("_")
-        app_id = int(parts[1])
-        price = float(parts[2])
-        db_path = context.bot_data['db_path']
+        try:
+            parts = data.split("_")
+            app_id = int(parts[1])
+            price = float(parts[2])
+        except (ValueError, IndexError) as e:
+            logging.warning(f"Failed to parse reject callback data '{data}': {e}")
+            return
 
+        db_path = context.bot_data['db_path']
         set_rejected_price(db_path, app_id, price)
+        logging.info(f"Rejected price set to ${price} for game {app_id}")
         await query.edit_message_text(text=f"Rejected price set to ${price} for game {app_id}. You won't see it again at this price!")
 
 

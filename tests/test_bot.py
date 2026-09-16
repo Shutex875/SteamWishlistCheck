@@ -1,34 +1,37 @@
-import asyncio
+import pytest
 from unittest.mock import AsyncMock, MagicMock
 from telegram.ext import CommandHandler, CallbackQueryHandler, Application
 from src.bot import start, button_callback, create_app
 from src.database import setup_db, get_rejected_price
 
 
-def test_start_handler():
+@pytest.mark.asyncio
+async def test_start_handler():
     update = MagicMock()
     update.message.reply_text = AsyncMock()
     context = MagicMock()
 
-    asyncio.run(start(update, context))
+    await start(update, context)
 
     update.message.reply_text.assert_awaited_once_with("Bot started! I will monitor your wishlist.")
 
 
-def test_button_callback_delete_msg():
+@pytest.mark.asyncio
+async def test_button_callback_delete_msg():
     update = MagicMock()
     update.callback_query.data = "delete_msg"
     update.callback_query.answer = AsyncMock()
     update.callback_query.message.delete = AsyncMock()
     context = MagicMock()
 
-    asyncio.run(button_callback(update, context))
+    await button_callback(update, context)
 
     update.callback_query.answer.assert_awaited_once()
     update.callback_query.message.delete.assert_awaited_once()
 
 
-def test_button_callback_reject(tmp_path):
+@pytest.mark.asyncio
+async def test_button_callback_reject(tmp_path):
     db_path = str(tmp_path / "test.db")
     setup_db(db_path)
 
@@ -40,7 +43,7 @@ def test_button_callback_reject(tmp_path):
     context = MagicMock()
     context.bot_data = {'db_path': db_path}
 
-    asyncio.run(button_callback(update, context))
+    await button_callback(update, context)
 
     update.callback_query.answer.assert_awaited_once()
     update.callback_query.edit_message_text.assert_awaited_once_with(
@@ -51,7 +54,27 @@ def test_button_callback_reject(tmp_path):
     assert saved_price == 14.99
 
 
-def test_button_callback_unknown_action():
+@pytest.mark.asyncio
+async def test_button_callback_reject_malformed(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    setup_db(db_path)
+
+    update = MagicMock()
+    update.callback_query.data = "reject_invalid"
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_text = AsyncMock()
+
+    context = MagicMock()
+    context.bot_data = {'db_path': db_path}
+
+    await button_callback(update, context)
+
+    update.callback_query.answer.assert_awaited_once()
+    update.callback_query.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_button_callback_unknown_action():
     update = MagicMock()
     update.callback_query.data = "other_action"
     update.callback_query.answer = AsyncMock()
@@ -59,7 +82,7 @@ def test_button_callback_unknown_action():
     update.callback_query.edit_message_text = AsyncMock()
     context = MagicMock()
 
-    asyncio.run(button_callback(update, context))
+    await button_callback(update, context)
 
     update.callback_query.answer.assert_awaited_once()
     update.callback_query.message.delete.assert_not_awaited()
