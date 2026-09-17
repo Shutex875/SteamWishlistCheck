@@ -35,8 +35,8 @@ async def check_wishlist_periodic(context):
             try:
                 text = f"🎮 {game['name']} is on sale!\nDiscount: {game['discount_pct']}%\nPrice: ${game['price_usd']}"
                 keyboard = [
-                    [InlineKeyboardButton("Fiyatı Beğenmedim", callback_data=f"reject_{game['appid']}_{game['price_usd']}")],
-                    [InlineKeyboardButton("Tamam (Sil)", callback_data="delete_msg")],
+                    [InlineKeyboardButton("Reject Price", callback_data=f"reject_{game['appid']}_{game['price_usd']}")],
+                    [InlineKeyboardButton("Okay", callback_data="delete_msg")],
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 

@@ -1,76 +1,71 @@
 import requests
+import time
+import logging
 
 DEFAULT_TIMEOUT = 10
 
-
 def fetch_owned_games(steam_id: str, api_key: str) -> set[int]:
-    """Fetch the set of appids owned by the given steam_id.
-    
-    Handles private profiles and API errors gracefully by returning an empty set.
-    """
     url = f"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={api_key}&steamid={steam_id}&format=json"
     try:
         resp = requests.get(url, timeout=DEFAULT_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
-        if isinstance(data, dict) and "response" in data and "games" in data["response"]:
-            games = data["response"]["games"]
-            if isinstance(games, list):
-                return {g["appid"] for g in games if isinstance(g, dict) and "appid" in g}
+        if "response" in data and "games" in data["response"]:
+            return {g["appid"] for g in data["response"]["games"]}
         return set()
-    except (requests.RequestException, ValueError):
-        # Gracefully handle private accounts or API errors
+    except Exception as e:
+        logging.error(f"Failed to fetch owned games for {steam_id}: {e}")
         return set()
-
 
 def fetch_wishlist(steam_id: str) -> list[dict]:
-    """Fetch public wishlist games for the given steam_id.
-    
-    Handles private profiles and API errors gracefully by returning an empty list.
-    """
-    # Wishlist data is paginated, but for simplicity we fetch page 0 which usually has 100+ items
-    # In a full implementation, loop through pages
-    url = f"https://store.steampowered.com/wishlist/profiles/{steam_id}/wishlistdata/?p=0"
+    parsed = []
     try:
+        url = f"https://api.steampowered.com/IWishlistService/GetWishlist/v1/?steamid={steam_id}"
         resp = requests.get(url, timeout=DEFAULT_TIMEOUT)
         resp.raise_for_status()
-        data = resp.json()
+        items = resp.json().get("response", {}).get("items", [])
+        appids = [str(item["appid"]) for item in items]
         
-        if not isinstance(data, dict):
-            return []
-
-        parsed = []
-        for app_id_str, info in data.items():
-            if not isinstance(info, dict):
-                continue
-            
-            subs = info.get("subs", [])
-            if not subs or not isinstance(subs, list):
-                continue
+        logging.info(f"Found {len(appids)} items on wishlist for {steam_id}. Fetching prices...")
+        
+        for appid in appids:
+            details_url = f"https://store.steampowered.com/api/appdetails?appids={appid}&filters=price_overview,basic"
+            retries = 3
+            while retries > 0:
+                d_resp = requests.get(details_url, timeout=DEFAULT_TIMEOUT)
+                if d_resp.status_code == 429:
+                    logging.warning(f"Rate limited by Steam on appid {appid}. Sleeping for 60s...")
+                    time.sleep(60)
+                    retries -= 1
+                    continue
+                    
+                if d_resp.status_code != 200:
+                    break
+                    
+                try:
+                    d_data = d_resp.json()
+                    if d_data and str(appid) in d_data and d_data[str(appid)].get("success"):
+                        data = d_data[str(appid)].get("data", {})
+                        price_overview = data.get("price_overview")
+                        if price_overview:
+                            discount_pct = price_overview.get("discount_percent", 0)
+                            price = price_overview.get("final", 0) / 100.0
+                            name = data.get("name", "Unknown Game")
+                            
+                            parsed.append({
+                                "appid": int(appid),
+                                "name": name,
+                                "is_discounted": discount_pct > 0,
+                                "discount_pct": discount_pct,
+                                "price_usd": price
+                            })
+                except Exception as e:
+                    logging.error(f"Error parsing appdetails for {appid}: {e}")
                 
-            sub_0 = subs[0]
-            if not isinstance(sub_0, dict):
-                continue
+                break
+            time.sleep(1.5)
+    except Exception as e:
+        logging.error(f"Error fetching wishlist for {steam_id}: {e}")
+        
+    return parsed
 
-            discount_pct = sub_0.get("discount_pct", 0) or 0
-            raw_price = sub_0.get("price", 0) or 0
-            try:
-                price = float(raw_price) / 100.0  # Price is typically in cents in Steam API
-            except (ValueError, TypeError):
-                price = 0.0
-            
-            try:
-                appid = int(app_id_str)
-            except (ValueError, TypeError):
-                continue
-
-            parsed.append({
-                "appid": appid,
-                "name": info.get("name", "Unknown"),
-                "discount_pct": discount_pct,
-                "price_usd": price
-            })
-        return parsed
-    except (requests.RequestException, ValueError):
-        # Gracefully handle private accounts or API errors
-        return []

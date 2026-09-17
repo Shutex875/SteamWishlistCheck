@@ -1,5 +1,5 @@
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from src.database import set_rejected_price
 
@@ -32,7 +32,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_path = context.bot_data['db_path']
         set_rejected_price(db_path, app_id, price)
         logging.info(f"Rejected price set to ${price} for game {app_id}")
-        await query.edit_message_text(text=f"Rejected price set to ${price} for game {app_id}. You won't see it again at this price!")
+        keyboard = [[InlineKeyboardButton("Okay", callback_data="delete_msg")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text=f"Rejected price set to ${price} for game {app_id}. You won't see it again at this price!",
+            reply_markup=reply_markup
+        )
 
 
 def create_app(token: str, db_path: str) -> Application:
