@@ -1,3 +1,5 @@
+import threading
+from flask import Flask
 import asyncio
 import logging
 import os
@@ -94,6 +96,24 @@ def main():
             'chat_id': chat_id,
         },
     )
+
+
+    # Start a dummy web server to keep platforms like Koyeb/Render happy (they require a bound PORT)
+    def run_dummy_server():
+        flask_app = Flask(__name__)
+        @flask_app.route('/')
+        def index():
+            return 'SteamDiscountWatchdog is running!'
+        port = int(os.environ.get('PORT', 8080))
+        # disable logging for flask to avoid spam
+        import logging as flask_logging
+        log = flask_logging.getLogger('werkzeug')
+        log.setLevel(flask_logging.ERROR)
+        flask_app.run(host='0.0.0.0', port=port, use_reloader=False)
+
+    server_thread = threading.Thread(target=run_dummy_server, daemon=True)
+    server_thread.start()
+    logging.info('Dummy web server started for health checks.')
 
     # Run polling
     logging.info("Bot starting polling...")
