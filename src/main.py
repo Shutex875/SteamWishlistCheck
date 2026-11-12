@@ -1,124 +1,118 @@
-import threading
-from flask import Flask
-import asyncio
 import logging
 import os
-import sys
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from src.bot import create_app
-from src.database import clear_expired_sales, setup_db, update_last_notified
-from src.filter_logic import get_actionable_games
-from src.steam_api import fetch_owned_games, fetch_wishlist
+from collections.abc import Iterator
+from html import escape
+
+import requests
+
+from src.steam_api import fetch_wishlist
+
+MIN_DISCOUNT_PCT = 21
+TELEGRAM_TEXT_LIMIT = 4096
+NO_BIG_SALES = "😴 Спи спокойно, Санечек! Сегодня в вишлисте без громких распродаж."
+WISHLIST_LABEL = "Твой вишлист:"
 
 logging.basicConfig(level=logging.INFO)
 
 
-async def check_wishlist_periodic(context):
-    db_path = context.job.data['db_path']
-    steam_id = context.job.data['steam_id']
-    steam_api_key = context.job.data['steam_api_key']
-    family_ids = context.job.data['family_ids']
-    chat_id = context.job.data['chat_id']
-    bot: Bot = context.bot
+def format_sale_message(game: dict) -> str | None:
+    discount = game['discount_pct']
+    if discount < MIN_DISCOUNT_PCT:
+        return None
+    if discount <= 50:
+        title = "👀 Взгляни-ка, неплохое предложение!"
+    elif discount <= 80:
+        title = "🔥 Санечек, беги покупай!"
+    elif discount <= 90:
+        title = "🚀 Санечка, лети покупай!"
+    else:
+        title = "🎁 Халява! Глянь до чего дождались:"
 
-    logging.info("Running periodic wishlist check...")
-
-    try:
-        wishlist = await asyncio.to_thread(fetch_wishlist, steam_id)
-
-        family_games = set()
-        for f_id in family_ids:
-            games = await asyncio.to_thread(fetch_owned_games, f_id, steam_api_key)
-            family_games.update(games)
-
-        actionable = get_actionable_games(wishlist, family_games, db_path)
-
-        for game in actionable:
-            try:
-                text = f"🎮 {game['name']} is on sale!\nDiscount: {game['discount_pct']}%\nPrice: ${game['price_usd']}"
-                keyboard = [
-                    [InlineKeyboardButton("Reject Price", callback_data=f"reject_{game['appid']}_{game['price_usd']}")],
-                    [InlineKeyboardButton("Okay", callback_data="delete_msg")],
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-
-                await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
-                update_last_notified(db_path, game['appid'], game['price_usd'])
-            except Exception as e:
-                logging.error(f"Failed to send deal notification for game {game.get('appid')}: {e}", exc_info=True)
-
-        # Clear expired
-        discounted_ids = [g['appid'] for g in wishlist if g.get('discount_pct', 0) > 0]
-        clear_expired_sales(db_path, discounted_ids)
-    except Exception as e:
-        logging.error(f"Error during periodic wishlist check: {e}", exc_info=True)
-        return
-
-
-def main():
-    token = os.environ.get("TELEGRAM_TOKEN")
-    steam_id = os.environ.get("MAIN_STEAM_ID")
-    steam_api_key = os.environ.get("STEAM_API_KEY")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    family_ids_str = os.environ.get("FAMILY_STEAM_IDS", "")
-    family_ids = [f.strip() for f in family_ids_str.split(",") if f.strip()] if family_ids_str else []
-    db_path = os.environ.get("DB_PATH", "data.db")
-
-    missing = []
-    if not token:
-        missing.append("TELEGRAM_TOKEN")
-    if not steam_id:
-        missing.append("MAIN_STEAM_ID")
-    if not steam_api_key:
-        missing.append("STEAM_API_KEY")
-    if not chat_id:
-        missing.append("TELEGRAM_CHAT_ID")
-
-    if missing:
-        logging.error(f"Missing required environment variables: {', '.join(missing)}")
-        sys.exit(1)
-
-    setup_db(db_path)
-
-    app = create_app(token, db_path)
-
-    # Schedule wishlist check every 24 hours (86400 seconds)
-    job_queue = app.job_queue
-    job_queue.run_repeating(
-        check_wishlist_periodic,
-        interval=86400,
-        first=10,
-        data={
-            'db_path': db_path,
-            'steam_id': steam_id,
-            'steam_api_key': steam_api_key,
-            'family_ids': family_ids,
-            'chat_id': chat_id,
-        },
+    return (
+        f"{title}\n\n"
+        f"🎮 {game['name']}\n\n"
+        f"💰 Было: {game['original_price']:.2f} € 💸 Стало: {game['price']:.2f} € "
+        f"📉 Скидка: −{discount}%\n\n"
+        f"🔗 Купить в Steam: {game['url']}"
     )
 
 
-    # Start a dummy web server to keep platforms like Koyeb/Render happy (they require a bound PORT)
-    def run_dummy_server():
-        flask_app = Flask(__name__)
-        @flask_app.route('/')
-        def index():
-            return 'SteamDiscountWatchdog is running!'
-        port = int(os.environ.get('PORT', 8080))
-        # disable logging for flask to avoid spam
-        import logging as flask_logging
-        log = flask_logging.getLogger('werkzeug')
-        log.setLevel(flask_logging.ERROR)
-        flask_app.run(host='0.0.0.0', port=port, use_reloader=False)
+def wishlist_blocks(games: list[dict], has_sales: bool) -> Iterator[str]:
+    heading = f"📋 <b>{WISHLIST_LABEL}</b>"
+    heading_length = len(f"📋 {WISHLIST_LABEL}")
+    lines = [heading] if has_sales else [NO_BIG_SALES, heading]
+    length = heading_length if has_sales else len(NO_BIG_SALES) + 1 + heading_length
+    max_line_length = TELEGRAM_TEXT_LIMIT - length - 1
+    for game in games:
+        discount = game["discount_pct"]
+        suffix = f" (-{discount}%)" if discount > 0 else ""
+        price = f" — {game['price']:.2f} €{suffix}"
+        max_name_length = max_line_length - len(price) - len("• ")
+        name = game["name"]
+        if len(name) > max_name_length:
+            name = name[:max_name_length - 1] + "…"
+        line_length = 2 + len(name) + len(price)
+        if length + 1 + line_length > TELEGRAM_TEXT_LIMIT:
+            yield "\n".join(lines)
+            lines = [heading]
+            length = heading_length
+        lines.append(f"• {escape(name)}{price}")
+        length += 1 + line_length
 
-    server_thread = threading.Thread(target=run_dummy_server, daemon=True)
-    server_thread.start()
-    logging.info('Dummy web server started for health checks.')
+    if not games:
+        lines.append("• Список пуст.")
+    yield "\n".join(lines)
 
-    # Run polling
-    logging.info("Bot starting polling...")
-    app.run_polling()
+
+def send_message(token: str, chat_id: str, text: str) -> None:
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "link_preview_options": {"is_disabled": True},
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        if not response.json().get("ok"):
+            raise RuntimeError("Telegram rejected the message.")
+    except requests.RequestException as error:
+        # Requests exceptions can include the URL, which contains the bot token.
+        raise RuntimeError(f"Telegram sendMessage failed ({type(error).__name__}).") from None
+
+
+def lambda_handler(event, context):
+    config = {
+        name: os.environ.get(name)
+        for name in ("TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "MAIN_STEAM_ID")
+    }
+    missing = [name for name, value in config.items() if not value]
+    if missing:
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+
+    token = config["TELEGRAM_TOKEN"]
+    chat_id = config["TELEGRAM_CHAT_ID"]
+    wishlist = fetch_wishlist(config["MAIN_STEAM_ID"])
+    other_games = []
+    sale_count = 0
+
+    for game in wishlist:
+        card = format_sale_message(game)
+        if card is None:
+            other_games.append(game)
+        else:
+            send_message(token, chat_id, escape(card))
+            sale_count += 1
+
+    if other_games or not sale_count:
+        for block in wishlist_blocks(other_games, has_sales=bool(sale_count)):
+            send_message(token, chat_id, block)
+
+    logging.info("Sent wishlist digest for %d games (%d deals).", len(wishlist), sale_count)
 
 
 if __name__ == "__main__":
-    main()
+    lambda_handler({}, None)

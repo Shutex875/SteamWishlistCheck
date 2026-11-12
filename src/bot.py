@@ -31,11 +31,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         db_path = context.bot_data['db_path']
         set_rejected_price(db_path, app_id, price)
-        logging.info(f"Rejected price set to ${price} for game {app_id}")
+        logging.info(f"Rejected price set to {price:.2f} € for game {app_id}")
         keyboard = [[InlineKeyboardButton("Okay", callback_data="delete_msg")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            text=f"Rejected price set to ${price} for game {app_id}. You won't see it again at this price!",
+            text=f"Rejected price set to {price:.2f} € for game {app_id}. You won't see it again at this price!",
             reply_markup=reply_markup
         )
 

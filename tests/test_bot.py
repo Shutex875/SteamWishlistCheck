@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 from telegram.ext import CommandHandler, CallbackQueryHandler, Application
 from src.bot import start, button_callback, create_app
 from src.database import setup_db, get_rejected_price
@@ -47,7 +47,8 @@ async def test_button_callback_reject(tmp_path):
 
     update.callback_query.answer.assert_awaited_once()
     update.callback_query.edit_message_text.assert_awaited_once_with(
-        text="Rejected price set to $14.99 for game 730. You won't see it again at this price!"
+        text="Rejected price set to 14.99 € for game 730. You won't see it again at this price!",
+        reply_markup=ANY,
     )
 
     saved_price = get_rejected_price(db_path, 730)

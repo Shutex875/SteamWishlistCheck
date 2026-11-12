@@ -19,53 +19,77 @@ def fetch_owned_games(steam_id: str, api_key: str) -> set[int]:
 
 def fetch_wishlist(steam_id: str) -> list[dict]:
     parsed = []
-    try:
-        url = f"https://api.steampowered.com/IWishlistService/GetWishlist/v1/?steamid={steam_id}"
-        resp = requests.get(url, timeout=DEFAULT_TIMEOUT)
-        resp.raise_for_status()
-        items = resp.json().get("response", {}).get("items", [])
-        appids = [str(item["appid"]) for item in items]
-        
-        logging.info(f"Found {len(appids)} items on wishlist for {steam_id}. Fetching prices...")
-        
-        for appid in appids:
-            details_url = f"https://store.steampowered.com/api/appdetails?appids={appid}&filters=price_overview,basic"
-            retries = 3
-            while retries > 0:
-                d_resp = requests.get(details_url, timeout=DEFAULT_TIMEOUT)
-                if d_resp.status_code == 429:
-                    logging.warning(f"Rate limited by Steam on appid {appid}. Sleeping for 60s...")
-                    time.sleep(60)
-                    retries -= 1
-                    continue
-                    
-                if d_resp.status_code != 200:
-                    break
-                    
-                try:
-                    d_data = d_resp.json()
-                    if d_data and str(appid) in d_data and d_data[str(appid)].get("success"):
-                        data = d_data[str(appid)].get("data", {})
-                        price_overview = data.get("price_overview")
-                        if price_overview:
-                            discount_pct = price_overview.get("discount_percent", 0)
-                            price = price_overview.get("final", 0) / 100.0
-                            name = data.get("name", "Unknown Game")
-                            
-                            parsed.append({
-                                "appid": int(appid),
-                                "name": name,
-                                "is_discounted": discount_pct > 0,
-                                "discount_pct": discount_pct,
-                                "price_usd": price
-                            })
-                except Exception as e:
-                    logging.error(f"Error parsing appdetails for {appid}: {e}")
-                
-                break
-            time.sleep(1.5)
-    except Exception as e:
-        logging.error(f"Error fetching wishlist for {steam_id}: {e}")
-        
-    return parsed
 
+    # 1. Получаем список ID игр из твоего вишлиста через надежный API
+    wishlist_url = f"https://api.steampowered.com/IWishlistService/GetWishlist/v1/?steamid={steam_id}"
+
+    try:
+        logging.info(f"Fetching wishlist IDs for {steam_id}...")
+        resp = requests.get(wishlist_url, timeout=DEFAULT_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+
+        items = data.get("response", {}).get("items", [])
+        if not items:
+            logging.info("Wishlist is empty or inaccessible.")
+            return []
+
+        appids = [str(item["appid"]) for item in items]
+        logging.info(f"Found {len(appids)} games. Fetching PT prices...")
+
+        # 2. Запрашиваем цены для найденных игр
+        for appid in appids:
+            price_url = f"https://store.steampowered.com/api/appdetails?appids={appid}&filters=price_overview,basic&cc=PT"
+
+            try:
+                p_resp = requests.get(price_url, timeout=DEFAULT_TIMEOUT)
+                p_resp.raise_for_status()
+                p_data = p_resp.json()
+
+                game_data = p_data.get(appid, {})
+                if not game_data.get("success"):
+                    continue
+
+                data = game_data.get("data", {})
+                name = data.get("name", "Unknown Game")
+                is_free = data.get("is_free", False)
+                price_overview = data.get("price_overview", {})
+
+                if is_free:
+                    parsed.append({
+                        "appid": int(appid),
+                        "name": name,
+                        "is_discounted": True,
+                        "discount_pct": 100,
+                        "price": 0.0,
+                        "original_price": 0.0,
+                        "url": f"https://store.steampowered.com/app/{appid}/"
+                    })
+                    continue
+
+                if not price_overview:
+                    continue
+
+                discount_pct = price_overview.get("discount_percent", 0)
+                price = price_overview.get("final", 0) / 100.0
+                original_price = price / (1 - (discount_pct / 100.0)) if 0 < discount_pct < 100 else 0.0
+
+                parsed.append({
+                    "appid": int(appid),
+                    "name": name,
+                    "is_discounted": discount_pct > 0,
+                    "discount_pct": discount_pct,
+                    "price": round(price, 2),
+                    "original_price": round(original_price, 2),
+                    "url": f"https://store.steampowered.com/app/{appid}/"
+                })
+            except Exception as e:
+                logging.error(f"Error fetching price for appid {appid}: {e}")
+            finally:
+                time.sleep(1.5)
+
+    except Exception as e:
+        logging.error(f"Error fetching wishlist IDs for {steam_id}: {e}")
+
+    logging.info(f"Successfully parsed {len(parsed)} games with PT prices.")
+    return parsed
